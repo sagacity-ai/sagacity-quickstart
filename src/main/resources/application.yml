@@ -1,0 +1,20 @@
+# ─────────────────────────────────────────────────────
+# Sagacity Quickstart — configuration
+# ─────────────────────────────────────────────────────
+
+# Set your API key here, or pass via environment:
+#   export SPRING_AI_OPENAI_API_KEY=sk-...
+spring:
+  ai:
+    openai:
+      api-key: ${SPRING_AI_OPENAI_API_KEY:your-key-here}
+      chat:
+        options:
+          model: gpt-4o-mini   # cheap model is fine for this demo
+
+# Sagacity uses an in-memory journal by default (no DB needed).
+# To use Postgres for a real audit trail, add a DataSource and sagacity
+# auto-configures the Postgres journal automatically.
+sagacity:
+  enabled: true
+  schema-init: true
