@@ -1,25 +1,50 @@
 # Sagacity Quickstart
 
-A runnable 5-minute demo of [Sagacity](https://github.com/sumitvairagar/sagacity) — the SAGA pattern for Spring AI agents.
+A runnable demo of [Sagacity](https://github.com/sagacity-ai/sagacity) — the SAGA pattern for Spring AI agents.
 
-**What it shows:**
-- An AI agent runs 3 tool calls (create todo → assign → notify)
-- Step 3 fails (simulated SMTP error)
-- Sagacity automatically compensates steps 1 and 2 **in reverse order**
-- The database ends up clean — as if nothing happened
-- A tamper-evident audit trail records every step
+Two real-world scenarios. Both fail mid-saga. Watch automatic compensation. Check the dashboard.
+
+---
+
+## What it shows
+
+### Scenario 1 — Fintech: Payment Order Processing
+**Saga ID:** `payment-order-acme-2026-001`
+
+Agent places an order: reserve inventory → charge card → send receipt → update loyalty points.
+
+**Failure:** Card declined at step 2.
+
+**What Sagacity does:** Releases the inventory reservation automatically. Card was never charged — nothing to reverse there. System returns to clean state.
+
+**Without Sagacity:** Inventory stays reserved indefinitely. Customer gets no receipt and no refund conversation makes sense because they were never charged. Operations team has to manually hunt down the orphaned reservation.
+
+---
+
+### Scenario 2 — HR: Employee Onboarding
+**Saga ID:** `employee-onboarding-james-wilson-2026-001`
+
+Agent onboards a new hire: create AD account → provision Slack → setup payroll → send welcome email.
+
+**Failure:** Payroll system timeout at step 3.
+
+**What Sagacity does:** Removes Slack access, then deletes the Active Directory account — in reverse order. No orphaned credentials.
+
+**Without Sagacity:** James Wilson has an Active Directory account and a Slack login, but is not in payroll and never got a welcome email. IT has to manually clean up. If nobody notices, he can log into systems he was never formally onboarded to.
+
+---
 
 ## Prerequisites
 
 - Java 21+
 - Maven 3.9+
-- An OpenAI API key (or swap for Anthropic/Ollama — see below)
+- An OpenAI API key (or swap for Anthropic/Ollama — see `application.properties`)
 
 ## Run in 3 steps
 
 ```bash
 # 1. Clone
-git clone https://github.com/sumitvairagar/sagacity-quickstart.git
+git clone https://github.com/sagacity-ai/sagacity-quickstart.git
 cd sagacity-quickstart
 
 # 2. Set your API key
@@ -29,99 +54,63 @@ export SPRING_AI_OPENAI_API_KEY=sk-...
 mvn spring-boot:run
 ```
 
+## Optional: Connect to Sagacity Cloud
+
+To see the hash-chain-verified audit trail in the dashboard, add your API key:
+
+```bash
+export SAGACITY_CLOUD_API_KEY=your-api-key
+```
+
+Then open [https://sagacity-dashboard.vercel.app](https://sagacity-dashboard.vercel.app) after running.
+
 ## Expected output
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
-║          Sagacity Quickstart — SAGA Pattern for AI Agents       ║
+║       Sagacity Quickstart — SAGA Pattern for Spring AI Agents   ║
+║       github.com/sagacity-ai/sagacity                           ║
 ╚══════════════════════════════════════════════════════════════════╝
 
-Step 1: createTodo   ← succeeds, writes to DB
-Step 2: assignTodo   ← succeeds, updates DB
-Step 3: notifyAssignee ← FAILS (simulated SMTP error)
+━━━ Scenario 1: Fintech — Payment Order Processing ━━━━━━━━━━━━━━
 
-Tool calls:
-  ✅ [createTodo]   id=todo-a3f2c1  title=Fix login bug  priority=high
-  ✅ [assignTodo]   todo-a3f2c1 → Alice
-  📧 [notifyAssignee] sending email to alice@example.com ...
-  ↩️  [noOp]          email was never sent — nothing to undo
-  ↩️  [unassignTodo]  removed assignee from todo-a3f2c1
-  ↩️  [deleteTodo]    removed todo-a3f2c1 from DB
+  ✅ [reserveInventory]  sku=SKU-LAPTOP-PRO  qty=5  reservation=RES-SKU9-001
+  💳 [chargeCard]        amount=£1299.99  card=****4242  ...
+  ❌  card declined — insufficient funds
+  ↩️  [voidCharge]       charge was never processed — nothing to void
+  ↩️  [releaseInventory] reservation RES-SKU9-001 released — stock available again
 
-─────────────────────────────────────────────────────────────────
-Saga status: COMPENSATED
-Failure cause: SMTP server unavailable
+  Saga status  : COMPENSATED
+  Inventory reservations after compensation: EMPTY ✅ — no orphaned reservations
 
-Database state after compensation: EMPTY ✅ (all side effects undone)
+━━━ Scenario 2: HR — Employee Onboarding ━━━━━━━━━━━━━━━━━━━━━━━━
 
-Audit trail (tamper-evident hash chain):
-┌─────┬────────────────────┬───────────────────────┬──────────────────────────┐
-│   # │ tool               │ phase                 │ payload                  │
-├─────┼────────────────────┼───────────────────────┼──────────────────────────┤
-│   1 │ createTodo         │ INTENT                │ {"title":"Fix login bu…  │
-│   2 │ createTodo         │ EXECUTED              │ "todo-a3f2c1"            │
-│   3 │ assignTodo         │ INTENT                │ {"todoId":"todo-a3f2c1…  │
-│   4 │ assignTodo         │ EXECUTED              │ "assigned todo-a3f2c1…   │
-│   5 │ notifyAssignee     │ INTENT                │ {"todoId":"todo-a3f2c1…  │
-│   6 │ notifyAssignee     │ FAILED                │ SMTP server unavailable  │
-│   7 │ notifyAssignee     │ COMPENSATED           │                          │
-│   8 │ assignTodo         │ COMPENSATED           │                          │
-│   9 │ createTodo         │ COMPENSATED           │                          │
-└─────┴────────────────────┴───────────────────────┴──────────────────────────┘
+  ✅ [createADAccount]   user=james.wilson@acme.com  id=ad-jwil-001
+  ✅ [provisionSlack]    workspace=acme  user=james.wilson@acme.com
+  💼 [setupPayroll]      account=ad-jwil-001  salary=£85000  start=2026-10-01
+  ❌  payroll system timeout — service unavailable
+  ↩️  [removeFromPayroll] enrollment never completed — nothing to reverse
+  ↩️  [deprovisionSlack] james.wilson@acme.com removed from Slack workspace
+  ↩️  [deleteADAccount]  account ad-jwil-001 deleted — no orphaned credentials
+
+  Saga status  : COMPENSATED
+  Active Directory accounts after compensation: EMPTY ✅ — no orphaned accounts
+  Slack users after compensation: EMPTY ✅ — no orphaned workspace access
 ```
 
-## Using Anthropic Claude instead of OpenAI
-
-Replace the OpenAI dependency in `pom.xml`:
+## Add Sagacity to your project
 
 ```xml
-<!-- Remove this -->
 <dependency>
-    <groupId>org.springframework.ai</groupId>
-    <artifactId>spring-ai-starter-model-openai</artifactId>
-</dependency>
-
-<!-- Add this -->
-<dependency>
-    <groupId>org.springframework.ai</groupId>
-    <artifactId>spring-ai-starter-model-anthropic</artifactId>
+    <groupId>io.github.sumitvairagar</groupId>
+    <artifactId>sagacity-spring-boot-starter</artifactId>
+    <version>0.2.0</version>
 </dependency>
 ```
-
-Update `application.yml`:
-
-```yaml
-spring:
-  ai:
-    anthropic:
-      api-key: ${SPRING_AI_ANTHROPIC_API_KEY}
-      chat:
-        options:
-          model: claude-3-5-haiku-20241022
-```
-
-## Using a real Postgres journal (for production)
-
-Add a DataSource to `application.yml` and the Spring Boot starter wires the Postgres journal automatically:
-
-```yaml
-spring:
-  datasource:
-    url: jdbc:postgresql://localhost:5432/myapp
-    username: myuser
-    password: mypass
-```
-
-No extra code needed — Sagacity auto-detects the DataSource and switches from in-memory to Postgres.
-
-## What to explore next
-
-- **Approval gates** — mark a tool as `IRREVERSIBLE` and it suspends until a human approves via REST API. See [guides/approval-gates](https://sumitvairagar.github.io/sagacity/guides/approval-gates/).
-- **Audit verification** — prove the journal hasn't been tampered with via `/sagacity/audit/{sagaId}/verify`.
-- **EU AI Act Article 12** — Sagacity's hash-chained journal maps directly to Article 12 compliance requirements.
 
 ## Links
 
-- 📖 [Full documentation](https://sumitvairagar.github.io/sagacity/)
-- ⭐ [Star Sagacity on GitHub](https://github.com/sumitvairagar/sagacity)
-- 🎬 [YouTube: EngineerInAI](https://youtube.com/@EngineerInAI)
+- 📖 Docs: https://sagacity-ai.github.io/sagacity/
+- ⭐ GitHub: https://github.com/sagacity-ai/sagacity
+- 🖥️ Dashboard: https://sagacity-dashboard.vercel.app
+- 📦 Maven Central: https://central.sonatype.com/artifact/io.github.sumitvairagar/sagacity-spring-boot-starter
