@@ -3,56 +3,45 @@ package dev.sagacity.quickstart;
 import dev.sagacity.core.annotation.Compensable;
 import dev.sagacity.core.annotation.Compensation;
 import dev.sagacity.core.compensation.CompensationContext;
-import org.springframework.ai.tool.annotation.Tool;
+import dev.sagacity.workflows.annotation.Stage;
+import dev.sagacity.workflows.annotation.Workflow;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * HR scenario — employee onboarding.
+ * Scenario 4 — HR: Employee onboarding.
  *
- * Four steps that mirror a real enterprise onboarding workflow:
+ * Four stages that mirror a real enterprise onboarding workflow:
  *
- *   1. createActiveDirectoryAccount — provisions the employee in AD/Azure. Undo: deleteADAccount.
- *   2. provisionSlack               — adds the employee to the Slack workspace. Undo: deprovisionSlack.
- *   3. setupPayroll                 — enrolls in payroll system. FAILS in this demo (timeout).
- *                                     Undo: removeFromPayroll (no-op, enrollment never completed).
- *   4. sendWelcomeEmail             — sends the welcome pack. Never reached.
+ *   Stage 1: createADAccount  — provisions the employee in AD. Undo: deleteADAccount.
+ *   Stage 2: provisionSlack   — adds to Slack workspace. Undo: deprovisionSlack.
+ *   Stage 3: setupPayroll     — enrolls in payroll. FAILS (timeout).
+ *   Stage 4: sendWelcomeEmail — sends the welcome pack. Never reached.
  *
- * When step 3 fails, Sagacity compensates step 2 (deprovisionSlack) then step 1
- * (deleteADAccount) in reverse order. The new hire ends up with no orphaned accounts.
+ * When stage 3 fails, stage 2 compensates (Slack removed), then stage 1
+ * compensates (AD account deleted) — in reverse order.
  *
- * Without Sagacity: James Wilson has an Active Directory account and a Slack account
- * but is not in payroll and never got a welcome email. IT has to manually clean up.
- * With Sagacity: clean slate, automatic, tamper-evident audit trail of every step.
+ * Without Sagacity: James Wilson has an AD account and Slack access but is not
+ * in payroll and never got a welcome email. IT has to manually clean up.
  */
+@Workflow(value = "employee-onboarding", description = "New employee onboarding workflow")
 @Component
 public class OnboardingTools {
 
-    /** Simulated Active Directory — maps account ID → employee details. */
     private final Map<String, Map<String, String>> adAccounts = new HashMap<>();
-
-    /** Simulated Slack workspace — maps email → workspace. */
     private final Map<String, String> slackUsers = new HashMap<>();
 
-    // ── Step 1: Create Active Directory account ────────────────────────────
+    // ── Stage 1: Create Active Directory account ──────────────────────────
 
-    @Tool(description = "Create an Active Directory account for a new employee.")
+    @Stage(order = 1, name = "createADAccount")
     @Compensable(by = "deleteADAccount")
-    public String createActiveDirectoryAccount(String firstName, String lastName,
-                                               String department, String manager) {
-        String email = (firstName.toLowerCase() + "." + lastName.toLowerCase() + "@acme.com");
-        String accountId = "ad-" + firstName.toLowerCase().charAt(0)
-                + lastName.toLowerCase().substring(0, 3)
-                + "-001";
-        adAccounts.put(accountId, Map.of(
-                "email", email,
-                "department", department,
-                "manager", manager,
-                "status", "ACTIVE"
-        ));
-        System.out.printf("  ✅ [createADAccount]   user=%-30s  id=%s%n", email, accountId);
+    public String createActiveDirectoryAccount(String input) {
+        String email = "james.wilson@acme.com";
+        String accountId = "ad-jwil-001";
+        adAccounts.put(accountId, Map.of("email", email, "dept", "Engineering"));
+        System.out.printf("  ✅ [Stage 1] createADAccount   user=%-30s  id=%s%n", email, accountId);
         return accountId;
     }
 
@@ -61,72 +50,63 @@ public class OnboardingTools {
         String accountId = ctx.result().replace("\"", "");
         Map<String, String> account = adAccounts.remove(accountId);
         String email = account != null ? account.get("email") : accountId;
-        System.out.printf("  ↩️  [deleteADAccount]  account %s (%s) deleted — no orphaned credentials%n",
+        System.out.printf("  ↩  [Compensate 1] deleteADAccount  account %s (%s) deleted%n",
                 accountId, email);
     }
 
-    // ── Step 2: Provision Slack ────────────────────────────────────────────
+    // ── Stage 2: Provision Slack ───────────────────────────────────────────
 
-    @Tool(description = "Add the new employee to the company Slack workspace.")
+    @Stage(order = 2, name = "provisionSlack")
     @Compensable(by = "deprovisionSlack")
-    public String provisionSlack(String adAccountId, String workspace) {
+    public String provisionSlack(String adAccountId) {
         Map<String, String> account = adAccounts.get(adAccountId);
         String email = account != null ? account.get("email") : adAccountId;
-        slackUsers.put(email, workspace);
-        System.out.printf("  ✅ [provisionSlack]    workspace=%-15s user=%s%n", workspace, email);
+        slackUsers.put(email, "acme");
+        System.out.printf("  ✅ [Stage 2] provisionSlack    workspace=acme  user=%s%n", email);
         return "slack-" + adAccountId;
     }
 
     @Compensation
     public void deprovisionSlack(CompensationContext ctx) {
-        // ctx.input() holds the args: {"adAccountId":"...","workspace":"..."}
-        String adAccountId = ctx.input().replaceAll(".*\"adAccountId\"\\s*:\\s*\"([^\"]+)\".*", "$1");
-        Map<String, String> account = adAccounts.get(adAccountId);
-        String email = account != null ? account.get("email") : adAccountId;
-        slackUsers.remove(email);
-        System.out.printf("  ↩️  [deprovisionSlack] %s removed from Slack workspace%n", email);
+        // Find the email from the AD account map to remove from Slack
+        String removed = slackUsers.entrySet().stream()
+                .filter(e -> e.getValue().equals("acme"))
+                .map(Map.Entry::getKey)
+                .findFirst().orElse("unknown");
+        slackUsers.remove(removed);
+        System.out.printf("  ↩  [Compensate 2] deprovisionSlack  %s removed from Slack%n", removed);
     }
 
-    // ── Step 3: Setup payroll — this one fails ─────────────────────────────
+    // ── Stage 3: Setup payroll — fails in this demo ───────────────────────
 
-    @Tool(description = "Enroll the new employee in the payroll system.")
+    @Stage(order = 3, name = "setupPayroll")
     @Compensable(by = "removeFromPayroll")
-    public String setupPayroll(String adAccountId, String salary, String startDate) {
-        System.out.printf("  💼 [setupPayroll]      account=%-12s salary=%s  start=%s%n",
-                adAccountId, salary, startDate);
-        // Simulate a payroll system timeout — this triggers compensation of steps 1 and 2
+    public String setupPayroll(String slackId) {
+        System.out.printf("  💼 [Stage 3] setupPayroll      account=ad-jwil-001  salary=£85000%n");
+        // Simulate a payroll system timeout — triggers compensation of stages 2 and 1
         throw new RuntimeException("Payroll system timeout — service unavailable");
     }
 
     @Compensation
     public void removeFromPayroll(CompensationContext ctx) {
-        // Payroll enrollment never completed (the tool threw before writing anything)
-        System.out.println("  ↩️  [removeFromPayroll] enrollment never completed — nothing to reverse");
+        // Enrollment never completed — nothing to reverse
+        System.out.println("  ↩  [Compensate 3] removeFromPayroll  enrollment never completed — nothing to reverse");
     }
 
-    // ── Step 4: Send welcome email — never reached in this demo ───────────
+    // ── Stage 4: Send welcome email — never reached ───────────────────────
 
-    @Tool(description = "Send a welcome email and onboarding pack to the new employee.")
-    @Compensable(by = "retractWelcomeEmail")
-    public String sendWelcomeEmail(String adAccountId, String managerEmail) {
-        Map<String, String> account = adAccounts.get(adAccountId);
-        String email = account != null ? account.get("email") : adAccountId;
-        System.out.printf("  📧 [sendWelcomeEmail]  to=%s  manager=%s%n", email, managerEmail);
-        return "welcome-sent";
-    }
-
-    @Compensation
-    public void retractWelcomeEmail(CompensationContext ctx) {
-        System.out.println("  ↩️  [retractWelcomeEmail] sent a retraction email");
+    @Stage(order = 4, name = "sendWelcomeEmail")
+    public void sendWelcomeEmail(String payrollId) {
+        System.out.printf("  📧 [Stage 4] sendWelcomeEmail  to=james.wilson@acme.com%n");
     }
 
     // ── Accessors for demo output ──────────────────────────────────────────
 
-    public Map<String, Map<String, String>> getAdAccounts() {
-        return adAccounts;
-    }
+    public Map<String, Map<String, String>> getAdAccounts() { return adAccounts; }
+    public Map<String, String> getSlackUsers() { return slackUsers; }
 
-    public Map<String, String> getSlackUsers() {
-        return slackUsers;
+    public void reset() {
+        adAccounts.clear();
+        slackUsers.clear();
     }
 }

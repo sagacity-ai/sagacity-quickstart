@@ -3,48 +3,47 @@ package dev.sagacity.quickstart;
 import dev.sagacity.core.annotation.Compensable;
 import dev.sagacity.core.annotation.Compensation;
 import dev.sagacity.core.compensation.CompensationContext;
-import org.springframework.ai.tool.annotation.Tool;
+import dev.sagacity.workflows.annotation.Stage;
+import dev.sagacity.workflows.annotation.Workflow;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Fintech scenario — payment order processing.
+ * Scenario 3 — Fintech: Payment order processing.
  *
- * Four steps that mirror a real payment flow:
+ * Four stages that mirror a real payment flow:
  *
- *   1. reserveInventory  — holds stock for the order. Undo: releaseInventory.
- *   2. chargeCard        — charges the customer. FAILS in this demo (card declined).
- *                          Since the charge never completed, the compensation is a no-op.
- *   3. sendReceipt       — emails the receipt. Never reached in this demo.
- *   4. updateLoyalty     — awards loyalty points. Never reached in this demo.
+ *   Stage 1: reserveInventory — holds stock. Undo: releaseInventory.
+ *   Stage 2: chargeCard       — charges the customer. FAILS (card declined).
+ *   Stage 3: sendReceipt      — emails the receipt. Never reached.
+ *   Stage 4: updateLoyalty    — awards loyalty points. Never reached.
  *
- * When step 2 fails, Sagacity compensates step 1 (releaseInventory) automatically.
- * The card was never charged — nothing to reverse there. Inventory is cleanly released.
+ * When stage 2 fails, stage 1 compensates automatically (inventory released).
+ * The card was never charged so there's nothing to reverse on the payment side.
  *
- * This is the scenario that breaks without Sagacity: inventory stays reserved,
- * the customer gets no receipt, but was also not charged. The system is inconsistent.
+ * Without Sagacity: inventory stays reserved indefinitely. The customer was
+ * never charged, has no receipt, and operations has an orphaned reservation.
  */
+@Workflow(value = "payment-order", description = "Payment order with card charge")
 @Component
 public class PaymentTools {
 
-    /** Simulated inventory system — maps reservation ID → item details. */
     private final Map<String, Map<String, String>> reservations = new HashMap<>();
 
-    // ── Step 1: Reserve inventory ──────────────────────────────────────────
+    // ── Stage 1: Reserve inventory ────────────────────────────────────────
 
-    @Tool(description = "Reserve inventory for an order. Returns a reservation ID.")
+    @Stage(order = 1, name = "reserveInventory")
     @Compensable(by = "releaseInventory")
-    public String reserveInventory(String sku, int quantity) {
+    public String reserveInventory(String input) {
+        // input is the order context passed to WorkflowRuntime.runAsync()
+        String sku = "SKU-LAPTOP-PRO";
+        int qty = 5;
         String reservationId = "RES-" + sku.replaceAll("[^A-Z0-9]", "") + "-001";
-        reservations.put(reservationId, Map.of(
-                "sku", sku,
-                "quantity", String.valueOf(quantity),
-                "status", "RESERVED"
-        ));
-        System.out.printf("  ✅ [reserveInventory]  sku=%-8s qty=%d  reservation=%s%n",
-                sku, quantity, reservationId);
+        reservations.put(reservationId, Map.of("sku", sku, "qty", String.valueOf(qty)));
+        System.out.printf("  ✅ [Stage 1] reserveInventory  sku=%s  qty=%d  reservation=%s%n",
+                sku, qty, reservationId);
         return reservationId;
     }
 
@@ -52,60 +51,55 @@ public class PaymentTools {
     public void releaseInventory(CompensationContext ctx) {
         String reservationId = ctx.result().replace("\"", "");
         reservations.remove(reservationId);
-        System.out.printf("  ↩️  [releaseInventory] reservation %s released — stock available again%n",
+        System.out.printf("  ↩  [Compensate 1] releaseInventory  reservation %s released%n",
                 reservationId);
     }
 
-    // ── Step 2: Charge the card — this one fails ───────────────────────────
+    // ── Stage 2: Charge card — fails in this demo ─────────────────────────
 
-    @Tool(description = "Charge the customer's card for the order amount in GBP.")
+    @Stage(order = 2, name = "chargeCard")
     @Compensable(by = "voidCharge")
-    public String chargeCard(String reservationId, double amountGbp, String cardLastFour) {
-        System.out.printf("  💳 [chargeCard]        amount=£%.2f  card=****%s  reservation=%s%n",
-                amountGbp, cardLastFour, reservationId);
-        // Simulate a card decline — this triggers compensation of step 1
+    public String chargeCard(String reservationId) {
+        System.out.printf("  💳 [Stage 2] chargeCard        reservation=%s  amount=£1299.99  card=****4242%n",
+                reservationId);
+        // Simulate card decline — triggers compensation of stage 1
         throw new RuntimeException("Card declined — insufficient funds");
     }
 
     @Compensation
     public void voidCharge(CompensationContext ctx) {
-        // The charge never completed (the tool threw before any real side effect)
-        // Nothing to reverse on the payment processor side
-        System.out.println("  ↩️  [voidCharge]       charge was never processed — nothing to void");
+        // Charge never completed — nothing to reverse
+        System.out.println("  ↩  [Compensate 2] voidCharge  charge was never processed — nothing to void");
     }
 
-    // ── Step 3: Send receipt — never reached in this demo ─────────────────
+    // ── Stage 3: Send receipt — never reached ─────────────────────────────
 
-    @Tool(description = "Email a payment receipt to the customer.")
+    @Stage(order = 3, name = "sendReceipt")
     @Compensable(by = "recallReceipt")
-    public String sendReceipt(String reservationId, String customerEmail, double amountGbp) {
-        System.out.printf("  📧 [sendReceipt]       receipt → %s  amount=£%.2f%n",
-                customerEmail, amountGbp);
+    public String sendReceipt(String chargeId) {
+        System.out.printf("  📧 [Stage 3] sendReceipt       charge=%s%n", chargeId);
         return "receipt-sent";
     }
 
     @Compensation
     public void recallReceipt(CompensationContext ctx) {
-        System.out.println("  ↩️  [recallReceipt]    sent a receipt correction email");
+        System.out.println("  ↩  [Compensate 3] recallReceipt  sent a receipt correction");
     }
 
-    // ── Step 4: Update loyalty points — never reached in this demo ────────
+    // ── Stage 4: Update loyalty — never reached ───────────────────────────
 
-    @Tool(description = "Award loyalty points to the customer for their purchase.")
-    @Compensable(by = "revokePoints")
-    public String updateLoyaltyPoints(String customerId, int points) {
-        System.out.printf("  ⭐ [updateLoyalty]     customer=%s  +%d points%n", customerId, points);
-        return "points-awarded";
-    }
-
-    @Compensation
-    public void revokePoints(CompensationContext ctx) {
-        System.out.println("  ↩️  [revokePoints]     loyalty points revoked");
+    @Stage(order = 4, name = "updateLoyalty")
+    public void updateLoyaltyPoints(String receiptId) {
+        System.out.printf("  ⭐ [Stage 4] updateLoyalty     receipt=%s  +1300 points%n", receiptId);
     }
 
     // ── Accessor for demo output ───────────────────────────────────────────
 
     public Map<String, Map<String, String>> getReservations() {
         return reservations;
+    }
+
+    public void reset() {
+        reservations.clear();
     }
 }

@@ -1,11 +1,8 @@
 package dev.sagacity.quickstart;
 
-import dev.sagacity.springai.SagaResult;
-import dev.sagacity.springai.Sagacity;
 import dev.sagacity.workflows.WorkflowHandle;
 import dev.sagacity.workflows.WorkflowRuntime;
 import dev.sagacity.workflows.WorkflowStatus;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -14,26 +11,21 @@ import org.springframework.context.annotation.Bean;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Sagacity Quickstart
+ * Sagacity Quickstart — Human oversight and audit for Spring AI agents.
  *
- * Three real-world scenarios demonstrating Sagacity — the reliability layer
- * for Spring AI agents.
+ * No API key required. Four scenarios, all running against simulated
+ * business services. Clone, run, open /sagacity/ui in your browser.
  *
- *   Scenario 1 — Fintech: Payment order (saga/compensation)
- *     Agent reserves inventory, attempts to charge a card (fails: declined).
- *     Sagacity automatically releases the inventory reservation.
+ *   Scenario 1 — Refund: gate APPROVED  → workflow completes
+ *   Scenario 2 — Refund: gate REJECTED  → stages 2 and 1 unwind automatically
+ *   Scenario 3 — Payment: stage fails   → compensation releases inventory
+ *   Scenario 4 — Onboarding: fails at stage 3 → reverse multi-step compensation
  *
- *   Scenario 2 — HR: Employee onboarding (saga/compensation)
- *     Agent creates AD account, provisions Slack, attempts payroll (fails: timeout).
- *     Sagacity removes Slack access and deletes the AD account in reverse order.
+ * Run:
+ *   mvn spring-boot:run
  *
- *   Scenario 3 — Fintech: Refund approval (verifiable workflow with @Gate)
- *     Agent validates and issues a refund, then pauses at a compliance gate.
- *     A compliance officer approves via REST. Confirmation email sent only after approval.
- *     Demonstrates: @Workflow, @Stage, @Gate, stage output chaining, async execution.
- *
- * Run: mvn spring-boot:run
- * Requires: SPRING_AI_OPENAI_API_KEY environment variable
+ * Then open:
+ *   http://localhost:8080/sagacity/ui
  */
 @SpringBootApplication
 public class QuickstartApplication {
@@ -43,220 +35,224 @@ public class QuickstartApplication {
     }
 
     @Bean
-    CommandLineRunner demo(Sagacity sagacity,
-                           ChatClient.Builder builder,
-                           PaymentTools paymentTools,
-                           OnboardingTools onboardingTools,
-                           RefundWorkflow refundWorkflow,
-                           WorkflowRuntime workflowRuntime) {
-        return args -> {
-            ChatClient chatClient = builder.build();
+    CommandLineRunner demo(
+            WorkflowRuntime workflowRuntime,
+            RefundWorkflow refundWorkflow,
+            PaymentTools paymentTools,
+            OnboardingTools onboardingTools) {
 
+        return args -> {
             printBanner();
 
-            // Scenarios 1 & 2: classic saga / compensation
-            runPaymentScenario(sagacity, chatClient, paymentTools);
-            runOnboardingScenario(sagacity, chatClient, onboardingTools);
-
-            // Scenario 3: verifiable workflow with @Gate
-            runRefundWorkflowScenario(refundWorkflow, workflowRuntime);
+            runScenario1_GateApproved(workflowRuntime, refundWorkflow);
+            runScenario2_GateRejected(workflowRuntime, refundWorkflow);
+            runScenario3_PaymentFailure(workflowRuntime, paymentTools);
+            runScenario4_OnboardingFailure(workflowRuntime, onboardingTools);
 
             printFooter();
         };
     }
 
-    // ── Scenario 1: Fintech — Payment order ──────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // Scenario 1 — Compliance gate: APPROVED
+    // ─────────────────────────────────────────────────────────────────────
 
-    private static void runPaymentScenario(Sagacity sagacity, ChatClient chatClient,
-                                           PaymentTools paymentTools) {
-        System.out.println("━━━ Scenario 1: Fintech — Payment Order (Saga + Compensation) ━━━━");
+    private static void runScenario1_GateApproved(
+            WorkflowRuntime runtime, RefundWorkflow refundWorkflow) throws Exception {
+
+        printScenarioHeader(1,
+                "Refund — Compliance Gate: APPROVED",
+                "Workflow pauses at stage 3 for human approval.\n" +
+                "  Once approved, it continues and completes normally.");
+
+        refundWorkflow.reset();
+        WorkflowHandle handle = runtime.runAsync(refundWorkflow, "ORDER-88210");
+
+        waitForGate(handle);
+
+        System.out.println("  ⏸  [Stage 3] Paused at compliance gate — waiting for approval");
+        System.out.println("      Run ID : " + handle.runId());
         System.out.println();
-        System.out.println("  What it shows: @Compensable on individual Spring AI tool calls.");
-        System.out.println("  Steps: reserveInventory → chargeCard → sendReceipt → updateLoyaltyPoints");
-        System.out.println("  Failure point: chargeCard (card declined)");
+        System.out.println("      In production, a compliance officer approves from the UI:");
+        System.out.println("      → http://localhost:8080/sagacity/ui");
+        System.out.println();
+        System.out.println("      Or via REST:");
+        System.out.printf( "      POST /sagacity/workflows/%s/gates/notifyCompliance/approve%n%n",
+                handle.runId());
+        System.out.println("  ✔  Simulating compliance officer approval...");
         System.out.println();
 
-        var tools = sagacity.wrap(paymentTools);
+        runtime.approveGate(handle.runId(), "notifyCompliance");
+        handle.awaitCompletion(10, TimeUnit.SECONDS);
 
-        SagaResult<String> result = sagacity.saga("payment-order-acme-2026-001", () ->
-                chatClient.prompt()
-                        .user("""
-                                Process a payment order:
-                                1. Reserve 5 units of SKU-LAPTOP-PRO from inventory.
-                                2. Charge £1299.99 to card ending in 4242 for the reservation.
-                                3. Send a receipt to sarah.chen@acme.com for £1299.99.
-                                4. Award 1300 loyalty points to customer C-8821.
-                                """)
-                        .toolCallbacks(tools)
-                        .call()
-                        .content()
-        );
+        printWorkflowResult(handle, refundWorkflow);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Scenario 2 — Compliance gate: REJECTED → auto-unwind
+    // ─────────────────────────────────────────────────────────────────────
+
+    private static void runScenario2_GateRejected(
+            WorkflowRuntime runtime, RefundWorkflow refundWorkflow) throws Exception {
+
+        printScenarioHeader(2,
+                "Refund — Compliance Gate: REJECTED → Auto-unwind",
+                "Gate rejection triggers automatic compensation.\n" +
+                "  Stages 2 and 1 are undone in reverse order — no manual cleanup needed.");
+
+        refundWorkflow.reset();
+        WorkflowHandle handle = runtime.runAsync(refundWorkflow, "ORDER-99301");
+
+        waitForGate(handle);
+
+        System.out.println("  ⏸  [Stage 3] Paused at compliance gate — waiting for decision");
+        System.out.println();
+        System.out.println("  ✖  Simulating compliance officer REJECTION...");
+        System.out.println("     Reason: Refund amount exceeds policy threshold — requires manager sign-off");
+        System.out.println();
+
+        runtime.rejectGate(handle.runId(), "notifyCompliance",
+                "Refund amount exceeds policy threshold — requires manager sign-off");
+        handle.awaitCompletion(10, TimeUnit.SECONDS);
+
+        printWorkflowResult(handle, refundWorkflow);
+        System.out.println("  Both completed stages compensated automatically.");
+        System.out.println("  No orphaned refund. No confirmation email sent to customer.");
+        System.out.println();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Scenario 3 — Payment order: stage failure → compensation
+    // ─────────────────────────────────────────────────────────────────────
+
+    private static void runScenario3_PaymentFailure(
+            WorkflowRuntime runtime, PaymentTools paymentTools) throws Exception {
+
+        printScenarioHeader(3,
+                "Payment Order — Stage Failure → Compensation",
+                "Stage 2 (chargeCard) fails — card declined.\n" +
+                "  Stage 1 (reserveInventory) compensates automatically — stock released.");
+
+        paymentTools.reset();
+        WorkflowHandle handle = runtime.runAsync(paymentTools, "ORDER-55123");
+        handle.awaitCompletion(10, TimeUnit.SECONDS);
 
         System.out.println();
-        printSagaResult(result, "payment-order-acme-2026-001", sagacity);
-        System.out.printf("  Inventory reservations after compensation: %s%n",
+        System.out.printf("  Workflow outcome : %s%n", handle.status());
+        handle.failureReason().ifPresent(r -> System.out.printf("  Failure reason   : %s%n", r));
+        System.out.printf("  Reservations     : %s%n",
                 paymentTools.getReservations().isEmpty()
-                        ? "EMPTY ✅ — no orphaned reservations"
+                        ? "EMPTY ✅  — no orphaned inventory reservation"
                         : paymentTools.getReservations());
         System.out.println();
     }
 
-    // ── Scenario 2: HR — Employee onboarding ──────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // Scenario 4 — Employee onboarding: multi-step reverse compensation
+    // ─────────────────────────────────────────────────────────────────────
 
-    private static void runOnboardingScenario(Sagacity sagacity, ChatClient chatClient,
-                                              OnboardingTools onboardingTools) {
-        System.out.println("━━━ Scenario 2: HR — Employee Onboarding (Saga + Compensation) ━━━");
-        System.out.println();
-        System.out.println("  What it shows: multi-step saga, reverse-order compensation.");
-        System.out.println("  Steps: createADAccount → provisionSlack → setupPayroll → sendWelcomeEmail");
-        System.out.println("  Failure point: setupPayroll (system timeout)");
-        System.out.println();
+    private static void runScenario4_OnboardingFailure(
+            WorkflowRuntime runtime, OnboardingTools onboardingTools) throws Exception {
 
-        var tools = sagacity.wrap(onboardingTools);
+        printScenarioHeader(4,
+                "Employee Onboarding — Multi-step Reverse Compensation",
+                "Stage 3 (setupPayroll) fails — timeout.\n" +
+                "  Stage 2 (Slack) compensates, then stage 1 (AD account) compensates.\n" +
+                "  No orphaned credentials. No half-onboarded employee.");
 
-        SagaResult<String> result = sagacity.saga("employee-onboarding-james-wilson-2026-001", () ->
-                chatClient.prompt()
-                        .user("""
-                                Onboard a new employee:
-                                1. Create an Active Directory account for James Wilson,
-                                   department Engineering, manager Sarah Chen.
-                                2. Provision Slack access in the acme workspace.
-                                3. Set up payroll with salary £85000, start date 2026-10-01.
-                                4. Send a welcome email to James, CC manager sarah.chen@acme.com.
-                                """)
-                        .toolCallbacks(tools)
-                        .call()
-                        .content()
-        );
+        onboardingTools.reset();
+        WorkflowHandle handle = runtime.runAsync(onboardingTools, "NEW-HIRE-JAMES-WILSON");
+        handle.awaitCompletion(10, TimeUnit.SECONDS);
 
         System.out.println();
-        printSagaResult(result, "employee-onboarding-james-wilson-2026-001", sagacity);
-        System.out.printf("  Active Directory accounts after compensation: %s%n",
+        System.out.printf("  Workflow outcome : %s%n", handle.status());
+        handle.failureReason().ifPresent(r -> System.out.printf("  Failure reason   : %s%n", r));
+        System.out.printf("  AD accounts      : %s%n",
                 onboardingTools.getAdAccounts().isEmpty()
-                        ? "EMPTY ✅ — no orphaned accounts"
+                        ? "EMPTY ✅  — no orphaned credentials"
                         : onboardingTools.getAdAccounts());
-        System.out.printf("  Slack users after compensation: %s%n",
+        System.out.printf("  Slack users      : %s%n",
                 onboardingTools.getSlackUsers().isEmpty()
-                        ? "EMPTY ✅ — no orphaned workspace access"
+                        ? "EMPTY ✅  — no orphaned workspace access"
                         : onboardingTools.getSlackUsers());
         System.out.println();
     }
 
-    // ── Scenario 3: Fintech — Refund workflow with @Gate ──────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────────
 
-    private static void runRefundWorkflowScenario(RefundWorkflow refundWorkflow,
-                                                  WorkflowRuntime workflowRuntime) throws Exception {
-        System.out.println("━━━ Scenario 3: Fintech — Refund Approval (@Workflow + @Gate) ━━━━");
-        System.out.println();
-        System.out.println("  What it shows: declarative @Workflow with @Stage, @Gate, stage chaining.");
-        System.out.println("  Stages: validateRefund → issueRefund → notifyCompliance [GATE] → sendConfirmation");
-        System.out.println("  Gate: compliance officer must approve before confirmation email is sent.");
-        System.out.println();
-        System.out.println("  Starting workflow async...");
-        System.out.println();
-
-        refundWorkflow.reset();
-
-        // Run async — workflow will pause at the @Gate on stage 3
-        WorkflowHandle handle = workflowRuntime.runAsync(refundWorkflow, "ORDER-88210");
-
-        // Wait for the gate
-        long deadline = System.currentTimeMillis() + 5000;
+    private static void waitForGate(WorkflowHandle handle) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 6_000;
         while (handle.status() != WorkflowStatus.PAUSED_AT_GATE
                 && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
         }
+    }
 
-        System.out.println("  ⏸️  [Stage 3] Workflow paused at compliance gate.");
-        System.out.println("      Status : PAUSED_AT_GATE");
-        System.out.println("      Run ID : " + handle.runId());
-        System.out.println();
-        System.out.println("      In a real system, approve via REST:");
-        System.out.printf("      POST /sagacity/workflows/%s/gates/notifyCompliance/approve%n",
-                handle.runId());
-        System.out.println();
-        System.out.println("  Simulating compliance officer approval (auto-approving in demo)...");
-        System.out.println();
-
-        // Auto-approve in the demo — in production this comes from a human via REST
-        workflowRuntime.approveGate(handle.runId(), "notifyCompliance");
-
-        // Wait for completion
-        handle.awaitCompletion(10, TimeUnit.SECONDS);
-
-        System.out.println();
-        System.out.println("─────────────────────────────────────────────────────────────────");
-        System.out.printf("  Workflow status : %s%n", handle.status());
+    private static void printWorkflowResult(WorkflowHandle handle, RefundWorkflow workflow) {
+        System.out.println("─────────────────────────────────────────────────────────────");
+        System.out.printf("  Workflow status   : %s%n", handle.status());
         if (handle.status() == WorkflowStatus.COMPLETED) {
-            System.out.printf("  Refund ID       : %s%n", refundWorkflow.getLastRefundId());
-            System.out.printf("  Email sent      : %s%n",
-                    refundWorkflow.isConfirmationSent() ? "YES ✅" : "NO ❌");
+            System.out.printf("  Refund ID         : %s%n", workflow.getLastRefundId());
+            System.out.printf("  Confirmation sent : YES ✅%n");
         } else {
             handle.failureReason().ifPresent(r ->
-                    System.out.printf("  Failure reason  : %s%n", r));
+                    System.out.printf("  Rejection reason  : %s%n",
+                            r.replace("gate rejected: ", "")));
+            System.out.printf("  Confirmation sent : NO ✅  (gate rejected — email blocked)%n");
         }
         System.out.println();
     }
 
-    // ── Shared output helpers ──────────────────────────────────────────────
+    private static void printScenarioHeader(int num, String title, String description) {
+        String bar = "━".repeat(Math.max(4, 62 - title.length()));
+        System.out.println("━━━ Scenario " + num + ": " + title + " " + bar);
+        System.out.println();
+        for (String line : description.split("\n")) {
+            System.out.println("  " + line.trim());
+        }
+        System.out.println();
+    }
 
     private static void printBanner() {
         System.out.println();
-        System.out.println("╔══════════════════════════════════════════════════════════════════════╗");
-        System.out.println("║   Sagacity Quickstart — The Reliability Layer for Spring AI Agents  ║");
-        System.out.println("║   github.com/sagacity-ai/sagacity  ·  v0.3.0                        ║");
-        System.out.println("╚══════════════════════════════════════════════════════════════════════╝");
+        System.out.println("╔═══════════════════════════════════════════════════════════════════╗");
+        System.out.println("║   Sagacity Quickstart  ·  v0.4.0                                 ║");
+        System.out.println("║   Human oversight and audit for Spring AI agents                 ║");
+        System.out.println("╚═══════════════════════════════════════════════════════════════════╝");
         System.out.println();
-        System.out.println("Three scenarios. All involve real-world side effects.");
-        System.out.println("Watch Sagacity compensate failures and gate irreversible actions.");
+        System.out.println("  Scenario 1: Compliance gate → APPROVED  → workflow completes");
+        System.out.println("  Scenario 2: Compliance gate → REJECTED  → stages unwind automatically");
+        System.out.println("  Scenario 3: Payment failure → compensation releases inventory");
+        System.out.println("  Scenario 4: Onboarding failure → reverse multi-step compensation");
         System.out.println();
-        System.out.println("  Scenario 1: Saga compensation (tool-call level)");
-        System.out.println("  Scenario 2: Multi-step saga with reverse compensation");
-        System.out.println("  Scenario 3: Verifiable workflow with @Stage, @Gate, and stage chaining");
+        System.out.println("  No API key required.");
+        System.out.println();
+        System.out.println("  ┌─ Open this now ──────────────────────────────────────────────┐");
+        System.out.println("  │  http://localhost:8080/sagacity/ui                           │");
+        System.out.println("  │  All workflow runs appear here live.                         │");
+        System.out.println("  └──────────────────────────────────────────────────────────────┘");
         System.out.println();
         System.out.println("─────────────────────────────────────────────────────────────────");
         System.out.println();
-    }
-
-    private static void printSagaResult(SagaResult<String> result, String sagaId,
-                                        Sagacity sagacity) {
-        System.out.println("─────────────────────────────────────────────────────────────────");
-        System.out.printf("  Saga status  : %s%n", result.status());
-        if (result.failure() != null) {
-            System.out.printf("  Failure cause: %s%n", result.failure().getMessage());
-        }
-        System.out.println();
-        System.out.println("  Audit trail (tamper-evident hash chain):");
-        System.out.println("  ┌────┬──────────────────────────────┬─────────────────────────┐");
-        System.out.printf("  │ %2s │ %-28s │ %-23s │%n", "#", "tool", "phase");
-        System.out.println("  ├────┼──────────────────────────────┼─────────────────────────┤");
-        sagacity.journal().entries(sagaId).forEach(e ->
-                System.out.printf("  │ %2d │ %-28s │ %-23s │%n",
-                        e.seq(),
-                        truncate(e.toolName(), 28),
-                        e.phase()
-                )
-        );
-        System.out.println("  └────┴──────────────────────────────┴─────────────────────────┘");
     }
 
     private static void printFooter() {
-        System.out.println("─────────────────────────────────────────────────────────────────");
+        System.out.println("═══════════════════════════════════════════════════════════════════");
         System.out.println();
-        System.out.println("All sagas and workflows are in your Sagacity Cloud dashboard.");
-        System.out.println("Open it to see the hash-chain-verified audit trail:");
+        System.out.println("  All 4 scenarios complete.");
         System.out.println();
-        System.out.println("  🖥️  https://sagacity-dashboard.vercel.app");
+        System.out.println("  The embedded UI shows every run with node-graph flow diagrams");
+        System.out.println("  and a tamper-evident audit trail:");
+        System.out.println("  → http://localhost:8080/sagacity/ui");
         System.out.println();
-        System.out.println("📖  Docs     : https://sagacity-ai.github.io/sagacity/");
-        System.out.println("🔄  Workflows: https://sagacity-ai.github.io/sagacity/guides/workflows/");
-        System.out.println("⭐  GitHub   : https://github.com/sagacity-ai/sagacity");
-        System.out.println("📦  Maven    : io.github.sumitvairagar:sagacity-spring-boot-starter:0.3.0");
+        System.out.println("  The server is still running. To see a live gate approval:");
+        System.out.println("  restart the app and approve scenario 1 manually from the UI.");
         System.out.println();
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null || s.isEmpty()) return "";
-        return s.length() <= max ? s : s.substring(0, max - 1) + "…";
+        System.out.println("  📖  Docs   : https://sagacity-ai.github.io/sagacity/");
+        System.out.println("  ⭐  GitHub : https://github.com/sagacity-ai/sagacity");
+        System.out.println("  📦  Maven  : io.github.sumitvairagar:sagacity-spring-boot-starter:0.4.0");
+        System.out.println();
     }
 }
