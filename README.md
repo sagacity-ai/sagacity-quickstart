@@ -1,81 +1,34 @@
 # Sagacity Quickstart
 
-A runnable demo of [Sagacity](https://github.com/sagacity-ai/sagacity) — the reliability layer for Spring AI agents.
+**Human oversight and audit for Spring AI agents.**
 
-Three real-world scenarios. All involve real side effects. Watch compensation run automatically and a workflow pause for human approval.
+No API key required. Clone, run, open your browser. See all 4 scenarios in under 60 seconds.
 
 ---
 
 ## What it shows
 
-### Scenario 1 — Fintech: Payment Order Processing
-**Demonstrates:** `@Compensable` on individual Spring AI tool calls.
+### Scenario 1 — Compliance gate: APPROVED
+A refund workflow runs stages 1 and 2, then **pauses at stage 3** waiting for a compliance officer to approve before the confirmation email goes out.
 
-Agent processes an order: reserve inventory → charge card → send receipt → award loyalty points.
+The gate survives JVM restarts — state is in-memory here but JDBC-backed in production.
 
-**Failure:** Card declined at step 2.
+Once approved, stages 3 and 4 execute. Workflow completes.
 
-**What Sagacity does:** Releases the inventory reservation automatically. Card was never charged — nothing to reverse there.
+### Scenario 2 — Compliance gate: REJECTED → auto-unwind
+Same refund workflow, but this time the compliance officer **rejects** the gate.
 
-**Without Sagacity:** Inventory stays reserved indefinitely. Customer gets no receipt and no order. Operations has to manually hunt down the orphaned reservation.
+Sagacity automatically compensates stage 2 (reverses the refund), then stage 1 (cancels the validation) — in reverse order. No orphaned state. No customer email sent.
 
----
+**This is the unique part:** every other human-in-the-loop tool lets a human approve or reject. None of them automatically unwind what already happened when the answer is reject.
 
-### Scenario 2 — HR: Employee Onboarding
-**Demonstrates:** Multi-step saga with reverse-order compensation.
+### Scenario 3 — Payment order: stage failure → compensation
+Agent reserves inventory, then the card is declined. Stage 1 compensates automatically — inventory released, no orphaned reservation.
 
-Agent onboards a new hire: create AD account → provision Slack → setup payroll → send welcome email.
-
-**Failure:** Payroll system timeout at step 3.
-
-**What Sagacity does:** Removes Slack access, then deletes the Active Directory account — in reverse order. No orphaned credentials.
-
-**Without Sagacity:** James Wilson has an Active Directory account and a Slack login, but is not in payroll and never got a welcome email. IT has to manually clean up.
+### Scenario 4 — Employee onboarding: multi-step reverse compensation
+AD account created, Slack provisioned, then payroll times out. Stage 2 (Slack) compensates, then stage 1 (AD account) compensates — in reverse order. No orphaned credentials.
 
 ---
-
-### Scenario 3 — Fintech: Refund Approval Workflow
-**Demonstrates:** `@Workflow`, `@Stage`, `@Gate`, stage output chaining, async execution.
-
-A `sagacity-workflows` workflow: validate refund → issue refund → compliance gate → send confirmation.
-
-**Gate:** The workflow pauses at stage 3 (`notifyCompliance`) and waits for a compliance officer to approve before the confirmation email goes out.
-
-**What Sagacity does:** Executes stages in order, chains each stage's output as the next stage's input automatically, pauses at the gate, resumes on approval. If stage 2 fails instead, stage 1 is compensated automatically.
-
-**The key difference from Scenarios 1 & 2:** The workflow is declared entirely in annotations. No orchestration code. The runtime handles stage order, chaining, gating, and compensation.
-
-```java
-@Workflow("refund-approval")
-@Component
-public class RefundWorkflow {
-
-    @Stage(order = 1)
-    @Compensable(by = "cancelValidation")
-    public String validateRefund(String orderId) { ... }
-
-    @Stage(order = 2)
-    @Compensable(by = "reverseRefund")
-    public String issueRefund(String validationId) {
-        // 'validationId' injected from stage 1's return value
-    }
-
-    @Stage(order = 3)
-    @Gate(approvalRequired = true, reason = "Compliance must approve before notifying customer")
-    public String notifyCompliance(String refundId) { ... }
-
-    @Stage(order = 4)
-    public void sendConfirmation(String refundId) { ... }
-}
-```
-
----
-
-## Prerequisites
-
-- Java 21+
-- Maven 3.9+
-- An OpenAI API key
 
 ## Run in 3 steps
 
@@ -84,101 +37,89 @@ public class RefundWorkflow {
 git clone https://github.com/sagacity-ai/sagacity-quickstart.git
 cd sagacity-quickstart
 
-# 2. Set your API key
-export SPRING_AI_OPENAI_API_KEY=sk-...
-
-# 3. Run
+# 2. Run
 mvn spring-boot:run
+
+# 3. Open the embedded UI
+open http://localhost:8080/sagacity/ui
 ```
 
-## Optional: Connect to Sagacity Cloud
-
-To see the hash-chain-verified audit trail in the dashboard:
-
-```bash
-export SAGACITY_CLOUD_API_KEY=your-api-key
-```
-
-Then open [https://sagacity-dashboard.vercel.app](https://sagacity-dashboard.vercel.app) after running.
+No API key. No database. No extra config.
 
 ---
 
-## Expected output
+## What you'll see in the UI
 
+Open `http://localhost:8080/sagacity/ui` while the app is running:
+
+- All 4 workflow runs listed with status badges
+- Click any row → node-graph flow diagram showing each stage
+- For gate runs: see whether the gate was approved or rejected
+- Compensation runs show the undo path in amber
+- Every run has a tamper-evident audit journal — click to see it
+
+---
+
+## The code
+
+The entire governance layer is annotations:
+
+```java
+@Workflow("refund-approval")
+@Component
+public class RefundWorkflow {
+
+    @Stage(order = 1)
+    @Compensable(by = "cancelValidation")       // auto-undone if anything fails
+    public String validateRefund(String orderId) { ... }
+
+    @Stage(order = 2)
+    @Compensable(by = "reverseRefund")
+    public String issueRefund(String validationId) { ... }
+
+    @Stage(order = 3)
+    @Gate(approvalRequired = true,               // workflow pauses here
+          reason = "Compliance must approve before customer is notified")
+    public String notifyCompliance(String refundId) { ... }
+
+    @Stage(order = 4)
+    public void sendConfirmation(String ref) { ... }
+}
 ```
-╔══════════════════════════════════════════════════════════════════════╗
-║   Sagacity Quickstart — The Reliability Layer for Spring AI Agents  ║
-║   github.com/sagacity-ai/sagacity  ·  v0.3.0                        ║
-╚══════════════════════════════════════════════════════════════════════╝
 
-Three scenarios. All involve real-world side effects.
-Watch Sagacity compensate failures and gate irreversible actions.
+```java
+// Approve from the UI, or via REST:
+POST /sagacity/workflows/{runId}/gates/notifyCompliance/approve
 
-━━━ Scenario 1: Fintech — Payment Order (Saga + Compensation) ━━━━
-
-  ✅ [reserveInventory]  sku=SKU-LAPTOP-PRO  qty=5  reservation=RES-SKULAPTOPPRO-001
-  💳 [chargeCard]        amount=£1299.99  card=****4242  ...
-  ❌  card declined — insufficient funds
-  ↩️  [voidCharge]       charge was never processed — nothing to void
-  ↩️  [releaseInventory] reservation RES-SKULAPTOPPRO-001 released
-
-  Inventory reservations after compensation: EMPTY ✅
-
-━━━ Scenario 2: HR — Employee Onboarding (Saga + Compensation) ━━━
-
-  ✅ [createADAccount]   user=james.wilson@acme.com  id=ad-jwil-001
-  ✅ [provisionSlack]    workspace=acme  user=james.wilson@acme.com
-  💼 [setupPayroll]      account=ad-jwil-001  salary=£85000  ...
-  ❌  payroll system timeout
-  ↩️  [removeFromPayroll] enrollment never completed — nothing to reverse
-  ↩️  [deprovisionSlack] james.wilson@acme.com removed from Slack workspace
-  ↩️  [deleteADAccount]  account ad-jwil-001 deleted
-
-  Active Directory accounts: EMPTY ✅
-  Slack users: EMPTY ✅
-
-━━━ Scenario 3: Fintech — Refund Approval (@Workflow + @Gate) ━━━━
-
-  ✅ [Stage 1] validateRefund    order=ORDER-88210  eligibility=CONFIRMED
-  ✅ [Stage 2] issueRefund       validation=validation-ORDER-88210  refundId=REF-12345
-  ⏸️  [Stage 3] Workflow paused at compliance gate.
-      Status : PAUSED_AT_GATE
-      POST /sagacity/workflows/{runId}/gates/notifyCompliance/approve
-
-  Simulating compliance officer approval (auto-approving in demo)...
-
-  ✅ [Stage 3] notifyCompliance  refundId=REF-12345  — compliance logged
-  ✅ [Stage 4] sendConfirmation  refundId=REF-12345  — email sent to customer
-
-  Workflow status : COMPLETED
-  Refund ID       : REF-12345
-  Email sent      : YES ✅
+// Reject — stages 2 and 1 compensate automatically:
+POST /sagacity/workflows/{runId}/gates/notifyCompliance/reject
+     {"reason": "Exceeds policy threshold"}
 ```
 
 ---
 
-## Add Sagacity to your project
+## Add to your project
 
 ```xml
-<!-- Core: compensation + audit trail -->
 <dependency>
     <groupId>io.github.sumitvairagar</groupId>
     <artifactId>sagacity-spring-boot-starter</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
 </dependency>
 
-<!-- Optional: declarative workflow engine -->
+<!-- Workflow engine: @Workflow, @Stage, @Gate, @Check -->
 <dependency>
     <groupId>io.github.sumitvairagar</groupId>
     <artifactId>sagacity-workflows</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
 </dependency>
 ```
+
+---
 
 ## Links
 
 - 📖 Docs: https://sagacity-ai.github.io/sagacity/
 - 🔄 Workflows guide: https://sagacity-ai.github.io/sagacity/guides/workflows/
 - ⭐ GitHub: https://github.com/sagacity-ai/sagacity
-- 🖥️ Dashboard: https://sagacity-dashboard.vercel.app
 - 📦 Maven Central: https://central.sonatype.com/artifact/io.github.sumitvairagar/sagacity-spring-boot-starter
