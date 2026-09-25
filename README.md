@@ -37,14 +37,20 @@ AD account created, Slack provisioned, then payroll times out. Stage 2 (Slack) c
 git clone https://github.com/sagacity-ai/sagacity-quickstart.git
 cd sagacity-quickstart
 
-# 2. Run
-mvn spring-boot:run
+# 2. Build and run
+mvn package -DskipTests -q
+java -Dspring.main.web-application-type=servlet -jar target/sagacity-quickstart-1.0.0.jar
 
 # 3. Open the embedded UI
 open http://localhost:8080/sagacity/ui
 ```
 
 No API key. No database. No extra config.
+
+> **Spring Boot 4 note:** The `-Dspring.main.web-application-type=servlet` flag is required because
+> Spring Boot 4 changed how it detects servlet web apps. Without it, Tomcat doesn't start.
+> This is a known Boot 4 behaviour — the flag tells the runtime to start Tomcat before
+> `application.yml` is processed.
 
 ---
 

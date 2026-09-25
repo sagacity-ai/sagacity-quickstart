@@ -6,6 +6,10 @@
 server:
   port: 8080
 
+spring:
+  main:
+    web-application-type: servlet   # required for Spring Boot 4 — also set as JVM arg in pom.xml
+
 sagacity:
   enabled: true
   schema-init: true

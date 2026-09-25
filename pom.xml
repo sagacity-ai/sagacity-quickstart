@@ -45,6 +45,12 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
+        <!-- Explicit servlet API — required for Spring Boot 4 web app type detection -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+        </dependency>
+
         <!-- Sagacity — governance layer for Spring AI agents -->
         <dependency>
             <groupId>io.github.sumitvairagar</groupId>
@@ -83,6 +89,10 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!-- Spring Boot 4 requires explicit web type hint before context refresh -->
+                    <jvmArguments>-Dspring.main.web-application-type=servlet</jvmArguments>
+                </configuration>
             </plugin>
         </plugins>
     </build>
