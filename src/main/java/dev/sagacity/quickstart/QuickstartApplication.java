@@ -44,12 +44,20 @@ public class QuickstartApplication {
         return args -> {
             printBanner();
 
-            runScenario1_GateApproved(workflowRuntime, refundWorkflow);
-            runScenario2_GateRejected(workflowRuntime, refundWorkflow);
-            runScenario3_PaymentFailure(workflowRuntime, paymentTools);
-            runScenario4_OnboardingFailure(workflowRuntime, onboardingTools);
-
-            printFooter();
+            try {
+                runScenario1_GateApproved(workflowRuntime, refundWorkflow);
+                runScenario2_GateRejected(workflowRuntime, refundWorkflow);
+                runScenario3_PaymentFailure(workflowRuntime, paymentTools);
+                runScenario4_OnboardingFailure(workflowRuntime, onboardingTools);
+                printFooter();
+            } catch (Exception e) {
+                System.err.println();
+                System.err.println("  [demo] Scenario failed: " + e.getMessage());
+                System.err.println("  Server is still running — open http://localhost:8080/sagacity/ui");
+                System.err.println();
+                // Do NOT rethrow — rethrowing causes Spring Boot to exit the JVM.
+                // The embedded Tomcat stays alive and /sagacity/ui remains accessible.
+            }
         };
     }
 
